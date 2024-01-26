@@ -1,0 +1,161 @@
+import requests
+from bs4 import BeautifulSoup
+import re
+import time
+from infoCompiler import AndroidScraper
+import queue
+import os
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+
+
+class WebScraper:
+    def __init__(self):
+        self.header = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_2_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.106 Safari/537.36"
+            }
+        self.processed_apps = {}
+        self.starting_links = []
+        self.scrape_all_pages()
+
+    def scrape_all_pages(self):
+        # Example usage
+        url = 'https://play.google.com/store/apps'
+
+        #s = Service("/Users/eusilakitur/Downloads/chromedriver_mac64/chromedriver")
+        s = Service("../../../chromedriver_mac64/chromedriver")
+        driver = webdriver.Chrome(service=s)
+        driver.get(url)
+        prefix = "https://play.google.com"
+
+        old_scroll_position = 0
+        new_scroll_position = None
+
+        while new_scroll_position != old_scroll_position:
+            old_scroll_position = driver.execute_script("return window.scrollY;")
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            new_scroll_position = driver.execute_script("return window.scrollY;")
+            
+
+        # Create BeautifulSoup object with the page source
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        # Scrape the desired data
+        links = soup.find_all("a", {'class':"Si6A0c ZD8Cqc"})
+        self.starting_links.extend([prefix + link['href'] for link in links if 'href' in link.attrs])
+
+        # Close the Selenium WebDriver
+        driver.quit()
+ 
+
+    # processed_apps is different than apps that are initially scraped
+    def similar_app_scraper(self, url):
+        """
+        param: takes an app url
+
+        return: returns list of urls of similar apps
+        """
+
+        # takes initial app URL from details page
+        res = requests.get(url, headers=self.header)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        app_url_list = []
+        prefix = "https://play.google.com"
+        for link in soup.find_all('a', {'jsname': "hSRGPd", 'class': "WpHeLc VfPpkd-mRLv6", 'href': re.compile("^/store/apps/collection")}):
+            half_url = link.get('href')
+            similar_url = prefix + half_url
+
+        # takes link from above and acquires URLs from similar apps
+        try:
+            new_res = requests.get(similar_url, headers=self.header)
+            new_soup = BeautifulSoup(new_res.text, 'html.parser')
+        except UnboundLocalError:
+            return
+
+
+        for link in new_soup.find_all('a', {'class': "Si6A0c ZD8Cqc", 'href': re.compile("^/store/apps/details")}):
+            temp_url = link.get('href')
+            app_url_list.append(prefix + temp_url)
+        
+        return app_url_list
+    
+
+    def crawl_app_links(self):
+        # try:
+        #     if url in self.processed_apps:  # base case
+        #         return
+        #     print(f"processing link: {url}")
+        #     app = AndroidScraper(url)
+        #     # print(1)
+        #     app.scrape_data()
+        #     # print(2)
+        #     app.write_to_json()
+        #     # print(3)
+        #     self.processed_apps[url] = True
+        #     similar_apps = self.similar_app_scraper(url)
+        #     for link in similar_apps:  # recurisve case
+        #         if link in self.processed_apps:
+        #             continue
+        #         self.crawl_app_links(link)
+
+        # except Exception as e:
+        #     print(f"error occured at URL: {url} - {e}")
+
+        try:
+            # NEW CODE FOR QUEUES
+            master_queue = queue.SimpleQueue()
+            for link in self.starting_links:  # takes links from starting page and puts them into the master queue
+                master_queue.put(link)
+            while not master_queue.empty():
+                url = master_queue.get()
+                scrape = AndroidScraper(url)
+                scrape.scrape_data()
+                scrape.write_to_json()
+                more_urls = self.similar_app_scraper(url)  # finds similar app URLs
+                app_ID = url.split("id=")
+                self.processed_apps[app_ID[1]] = True  # signals that current URL has been analyzed using the app ID
+                print(f"app processed: {url}")
+                for new_link in more_urls:
+                    if new_link not in self.processed_apps.keys():
+                        master_queue.put(new_link)
+        
+        except Exception as e:
+            print(f"error occured at URL: {url} - {e}")
+
+
+    # def run_scraper(self):
+    #     # self.scrape_all_pages()
+    #     for url in self.starting_links:
+    #         print(url)
+    #         if url in self.processed_apps:
+    #             continue
+    #         self.crawl_app_links(url)
+    
+
+    def load_processed_apps(self, directory):
+        """Loads the names of the processed apps from a given directory into the processed_apps dictionary.
+
+        Args:
+            directory (str): Directory where the JSON files are stored.
+        """
+        for filename in os.listdir(directory):
+            if filename.endswith(".json"):  # make sure the files are .json
+                app_name = filename.rstrip('.json')  # remove .json from filename to get app name
+                self.processed_apps[app_name] = True
+
+
+
+def main():
+    directory = "json_android_files"
+
+    scrape = WebScraper()
+    # scrape.similar_app_scraper("https://play.google.com/store/apps/details?id=com.google.android.youtube")
+    scrape.load_processed_apps(directory)
+    scrape.crawl_app_links()
+    # links = scrape.starting_links
+
+
+
+if __name__ == "__main__":
+    main()
